@@ -39,6 +39,7 @@ async function checkHiboLogin(page, brand) {
   let brandMatch = null;
   if (brand === '小仓') brandMatch = state.org === '小仓生活' || state.org === '小仓生活仓店';
   else if (brand === '乐心宜') brandMatch = Boolean(state.org && state.org.includes('乐心宜'));
+  else if (brand) brandMatch = Boolean(state.org && state.org.includes(brand));
 
   return {
     url,
@@ -57,11 +58,55 @@ function inspectProfileMatch(allProfiles, profileName) {
     exists: matched.length === 1,
     ambiguous: matched.length > 1,
     id: matched.length === 1 ? matched[0].id : null,
+    source: 'configured',
+    isDefaultFallback: false,
+  };
+}
+
+function resolveEffectiveProfile(allProfiles, { configuredName, legacyNames = [] } = {}) {
+  const explicit = configuredName ? String(configuredName).trim() : '';
+  if (explicit) {
+    return inspectProfileMatch(allProfiles, explicit);
+  }
+  for (const candidate of legacyNames) {
+    const clean = String(candidate || '').trim();
+    if (!clean) continue;
+    const matched = allProfiles.filter((item) => item.name === clean);
+    if (matched.length === 1) {
+      return {
+        profileName: matched[0].name,
+        exists: true,
+        ambiguous: false,
+        id: matched[0].id,
+        source: 'matched_existing',
+        isDefaultFallback: false,
+      };
+    }
+  }
+  const fallback = allProfiles.find((item) => item.isDefault) || allProfiles[0] || null;
+  if (fallback) {
+    return {
+      profileName: fallback.name,
+      exists: true,
+      ambiguous: false,
+      id: fallback.id,
+      source: 'egolite_default',
+      isDefaultFallback: true,
+    };
+  }
+  return {
+    profileName: '默认资料',
+    exists: allProfiles.length === 0,
+    ambiguous: false,
+    id: null,
+    source: 'egolite_default',
+    isDefaultFallback: true,
   };
 }
 
 async function runLoginCheck(profileId, label, checkFn, { keepLoginWindow = true } = {}) {
-  const task = await globalThis.taskSpace(`xc-ego 体检 ${label} ${Date.now()}`, { profileId });
+  const taskOptions = profileId ? { profileId } : {};
+  const task = await globalThis.taskSpace(`xc-ego 体检 ${label} ${Date.now()}`, taskOptions);
   let keepWindow = false;
   try {
     const page = task.page('p1');
@@ -106,17 +151,27 @@ export async function run(input) {
     || (target !== 'both' ? req.profileName : null)
     || resolveProfileName(prefs, { target: 'hibo' });
   const hiboInfo = (target === 'hibo' || target === 'both')
-    ? inspectProfileMatch(allProfiles, hiboProfileName)
+    ? resolveEffectiveProfile(allProfiles, {
+      configuredName: hiboProfileName,
+      legacyNames: ['采集'],
+    })
     : null;
 
-  const meituanBrands = brand ? [brand] : ['小仓', '乐心宜'];
+  const rawBrands = Array.isArray(req.brands) && req.brands.length
+    ? [...new Set(req.brands.map((item) => normalizeBrand(item)).filter(Boolean))]
+    : (brand ? [brand] : []);
+  const meituanEntries = rawBrands.length ? rawBrands : ['default'];
   const meituanProfiles = {};
   if (target === 'meituan' || target === 'both') {
-    for (const b of meituanBrands) {
-      const name = req.meituanProfileName
-        || (target !== 'both' && brand && req.profileName ? req.profileName : null)
-        || resolveProfileName(prefs, { target: 'meituan', brand: b });
-      meituanProfiles[b] = inspectProfileMatch(allProfiles, name);
+    for (const entry of meituanEntries) {
+      const isGenericDefault = entry === 'default';
+      const configuredName = (isGenericDefault ? null : req.meituanProfileName)
+        || (target !== 'both' && !isGenericDefault && req.profileName ? req.profileName : null)
+        || (isGenericDefault ? resolveProfileName(prefs, { target: 'hibo' }) : resolveProfileName(prefs, { target: 'meituan', brand: entry }));
+      meituanProfiles[entry] = resolveEffectiveProfile(allProfiles, {
+        configuredName,
+        legacyNames: isGenericDefault ? [] : [entry],
+      });
     }
   }
 
@@ -135,10 +190,28 @@ export async function run(input) {
       brand,
       missingProfiles,
       availableProfiles: allProfiles.map((p) => ({ id: p.id, name: p.name, isDefault: p.isDefault })),
-      nextStep: '请在 EgoLite 中创建唯一对应的资料，或在 ~/.xc-ego/preferences.json 中绑定已有资料名。',
+      nextStep: '未找到你在配置中指定的资料；可改用默认资料，或在 ~/.xc-ego/preferences.json 中更新绑定名称。',
     };
     console.log(JSON.stringify(result, null, 2));
     return result;
+  }
+
+  if (rawBrands.length >= 2) {
+    const resolvedIds = rawBrands.map((b) => meituanProfiles[b]?.id).filter(Boolean);
+    if (resolvedIds.length >= 2 && new Set(resolvedIds).size < rawBrands.length) {
+      const result = {
+        ok: false,
+        stage: 'meituan_profile_isolation_required',
+        platform: process.platform,
+        target,
+        brands: rawBrands,
+        meituanProfiles,
+        availableProfiles: allProfiles.map((p) => ({ id: p.id, name: p.name, isDefault: p.isDefault })),
+        nextStep: '同一个 EgoLite 资料下美团商家后台只能登录一个账号；本次同时涉及多个美团中台，建议默认资料保留其中一个中台，再新建 1 个任意命名的资料登录另一个中台，并在 ~/.xc-ego/preferences.json 中绑定。仅使用单个美团中台时无需新建资料。',
+      };
+      console.log(JSON.stringify(result, null, 2));
+      return result;
+    }
   }
 
   const loginReport = {};
@@ -175,7 +248,14 @@ export async function run(input) {
     platform: process.platform,
     target,
     brand,
-    ...(hiboInfo ? { hiboProfile: { id: hiboInfo.id, name: hiboInfo.profileName } } : {}),
+    ...(hiboInfo ? {
+      hiboProfile: {
+        id: hiboInfo.id,
+        name: hiboInfo.profileName,
+        source: hiboInfo.source,
+        isDefaultFallback: hiboInfo.isDefaultFallback,
+      },
+    } : {}),
     ...(Object.keys(meituanProfiles).length ? { meituanProfiles } : {}),
     availableProfiles: allProfiles.map((p) => p.name),
     checkLogin,

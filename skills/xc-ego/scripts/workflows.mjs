@@ -197,17 +197,21 @@ export function formatOfferReply({ platform, pathSummary, requiredParams = [], i
     ]);
     const paramsText = mergedParams.length ? mergedParams.join('、') : '中台、门店名称、渠道、日期等本次参数';
     const itemLines = normalizedItems.map(
-      (it, idx) => `    1.1.${idx + 1} ${it.name}（${formatPlatformLabel(it.platform)} · ${it.pathSummary}）${it.alreadySaved ? '（已有单项）' : ''}`,
+      (it, idx) => `${idx + 1}. **${it.name}**（${formatPlatformLabel(it.platform)} · \`${it.pathSummary}\`）${it.alreadySaved ? '（已有单项）' : ''}`,
     );
     return [
-      `1 本次对话共完成 ${normalizedItems.length} 项操作，尚未立为整体固定流程。`,
-      '1.1 包含项目：',
+      '---',
+      `### 📌 本次完成 ${normalizedItems.length} 项操作，是否固化为固定流程？`,
+      '',
+      '**包含项目**',
       ...itemLines,
-      `1.2 每次须指定：${paramsText}（参数不写死，随当次任务给定）`,
-      '2 请选择固化方式（不回复则保持单次执行）：',
-      `2.1 回复「固化整体」：将上述 ${normalizedItems.length} 项合并立为一条串联固定流程。`,
-      '2.2 回复「固化单项」并指明序号或名称（如「只固化 1」）：仅将指定表或操作立为独立固定流程。',
-      '2.3 回复「都要」：同时固化整体串联流程与各单项独立流程。',
+      '',
+      `- **每次按需提供**：${paramsText}（不写死）`,
+      '',
+      '**请选择固化方式**（不回复则仅作本次执行）：',
+      `- ▸ 回复 **「固化整体」** → 将上述 ${normalizedItems.length} 项合并保存为 1 条串联流程`,
+      '- ▸ 回复 **「固化单项」** 并指明序号或名称（如「只固化 1」）→ 仅保存指定单项',
+      '- ▸ 回复 **「都要」** → 同时保存整体串联流程与各单项独立流程',
     ].join('\n');
   }
 
@@ -223,10 +227,13 @@ export function formatOfferReply({ platform, pathSummary, requiredParams = [], i
   const cleanedParams = cleanParamList(requiredParams);
   const paramsText = cleanedParams.length ? cleanedParams.join('、') : '中台、门店名称、渠道、日期等本次参数';
   return [
-    '1 此操作已完成，尚未立为固定流程。',
-    `1.1 固定路径：${label} · ${summary}`,
-    `1.2 每次须指定：${paramsText}（参数不写死，随当次任务给定）`,
-    '2 是否将此路径固化为本机固定流程？回复「固化」即可落盘，不回复则保持单次执行。',
+    '---',
+    '### 📌 是否固化为本机固定流程？',
+    '',
+    `- **固定路径**：${label} · \`${summary}\``,
+    `- **每次按需提供**：${paramsText}（不写死）`,
+    '',
+    '👉 回复 **「固化」** 即可保存；不回复则仅作本次执行。',
   ].join('\n');
 }
 
@@ -236,20 +243,22 @@ export function formatConfirmationReply(workflow) {
   if (workflow.kind === 'composite') {
     const count = Array.isArray(workflow.subTasks) ? workflow.subTasks.length : 0;
     return [
-      `1 流程已定：「${workflow.name}」已固化为本机整体固定流程（共 ${count} 项，串行执行）。`,
-      `1.1 固定部分：${workflow.pathSummary} 与标准执行核验步骤。`,
-      `1.2 变动部分：${paramsText}，不作写死，每次调用按需说明。`,
-      `2 下次调用：直接说出此整体流程名或目标组合并附本次参数（如「${example}」），将自动匹配并按序执行全部项目。`,
-      '2.1 边界：意图与参数齐备即直接执行完成；仅在缺参、存在歧义或遇登录验证时停下询问。',
+      `### ✅ 已固化本机整体固定流程：「${workflow.name}」（共 ${count} 项，串行执行）`,
+      '',
+      `- **固定路径**：${workflow.pathSummary}`,
+      `- **每次按需提供**：${paramsText}（不写死，随当次任务给定）`,
+      `- **下次调用**：直接说 **「${example}」**，将自动匹配并按序执行全部项目`,
+      '- **执行边界**：意图与参数齐备即直接执行完成；仅在缺参、存在歧义或遇登录验证时停下询问。',
     ].join('\n');
   }
   const label = formatPlatformLabel(workflow.platform);
   return [
-    `1 流程已定：「${workflow.name}」已固化为本机固定流程。`,
-    `1.1 固定部分：${label}路径「${workflow.pathSummary}」与标准执行核验步骤。`,
-    `1.2 变动部分：${paramsText}，不作写死，每次调用按需说明。`,
-    `2 下次调用：直接说出要下载的表格或要完成的操作并附本次参数（如「${example}」），将自动匹配并调用此流程。`,
-    '2.1 边界：意图与参数齐备即直接执行完成；仅在缺参、存在歧义或遇登录验证时停下询问。',
+    `### ✅ 已固化本机固定流程：「${workflow.name}」`,
+    '',
+    `- **固定路径**：${label} · \`${workflow.pathSummary}\``,
+    `- **每次按需提供**：${paramsText}（不写死，随当次任务给定）`,
+    `- **下次调用**：直接说 **「${example}」**，将自动匹配并调用此流程`,
+    '- **执行边界**：意图与参数齐备即直接执行完成；仅在缺参、存在歧义或遇登录验证时停下询问。',
   ].join('\n');
 }
 
@@ -263,9 +272,9 @@ export function formatBatchConfirmationReply(workflows) {
   const lines = workflows.map((wf, idx) => {
     if (wf.kind === 'composite') {
       const names = (wf.subTasks || []).map((t) => t.name).join('、');
-      return `    1.1.${idx + 1} 【整体】「${wf.name}」（含 ${(wf.subTasks || []).length} 项：${names}）`;
+      return `${idx + 1}. **【整体】「${wf.name}」**（含 ${(wf.subTasks || []).length} 项：${names}）`;
     }
-    return `    1.1.${idx + 1} 【单项】「${wf.name}」（${formatPlatformLabel(wf.platform)} · ${wf.pathSummary}）`;
+    return `${idx + 1}. **【单项】「${wf.name}」**（${formatPlatformLabel(wf.platform)} · \`${wf.pathSummary}\`）`;
   });
   const mergedParams = cleanParamList(workflows.flatMap((wf) => wf.requiredParams || []));
   const composite = workflows.find((wf) => wf.kind === 'composite');
@@ -273,22 +282,24 @@ export function formatBatchConfirmationReply(workflows) {
   const exampleParts = composite && single
     ? [composite.exampleCall || buildDefaultExampleCall(composite), single.exampleCall || buildDefaultExampleCall(single)]
     : workflows.slice(0, 2).map((wf) => wf.exampleCall || buildDefaultExampleCall(wf));
-  const examplesText = exampleParts.filter(Boolean).map((ex) => `「${ex}」`).join('或');
+  const examplesText = exampleParts.filter(Boolean).map((ex) => `**「${ex}」**`).join(' 或 ');
   let nextCallLine;
   if (composite && single) {
-    nextCallLine = `2 下次调用：说整体流程名即按序执行全套，说单项表名或操作名即单独执行该项并附本次参数（如${examplesText}）。`;
+    nextCallLine = `- **下次调用**：说整体流程名按序执行全套，说单项名单独执行该项（如 ${examplesText}）`;
   } else if (single) {
-    nextCallLine = `2 下次调用：直接说出对应表名或操作名并附本次参数（如${examplesText}），将自动匹配并单独执行该项。`;
+    nextCallLine = `- **下次调用**：直接说出对应表名或操作名并附参数（如 ${examplesText}），将自动匹配并单独执行`;
   } else {
-    nextCallLine = `2 下次调用：直接说出对应整体流程名并附本次参数（如${examplesText}），将自动匹配并按序执行全部项目。`;
+    nextCallLine = `- **下次调用**：直接说出对应整体流程名并附参数（如 ${examplesText}），将自动匹配并按序执行全部项目`;
   }
   return [
-    `1 流程已定：本次共固化 ${workflows.length} 条本机固定流程。`,
-    '1.1 已固化清单：',
+    `### ✅ 本次共固化 ${workflows.length} 条本机固定流程`,
+    '',
+    '**已固化清单**',
     ...lines,
-    `1.2 变动部分：${mergedParams.join('、')}，均不作写死，每次调用按需说明。`,
+    '',
+    `- **每次按需提供**：${mergedParams.join('、')}（均不写死，随当次任务给定）`,
     nextCallLine,
-    '2.1 边界：意图与参数齐备即直接执行完成；仅在缺参、存在歧义或遇登录验证时停下询问。',
+    '- **执行边界**：意图与参数齐备即直接执行完成；仅在缺参、存在歧义或遇登录验证时停下询问。',
   ].join('\n');
 }
 

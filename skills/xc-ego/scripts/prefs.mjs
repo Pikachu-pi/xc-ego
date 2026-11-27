@@ -6,8 +6,35 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const SKILL_ROOT = path.resolve(SCRIPT_DIR, '..');
-export const DEFAULT_OUTPUT_DIR = path.join(SKILL_ROOT, '产出文件');
+export const DEFAULT_OUTPUT_DIR = path.join(os.homedir(), 'Desktop', 'xc-ego产出');
 export const DEFAULT_PREFS_PATH = path.join(os.homedir(), '.xc-ego', 'preferences.json');
+
+export function getRecommendedOutputRoots({ homedir = os.homedir(), workspaceDir = '' } = {}) {
+  const list = [
+    {
+      key: 'desktop',
+      label: '桌面（推荐）',
+      path: path.join(homedir, 'Desktop', 'xc-ego产出'),
+      recommended: true,
+    },
+    {
+      key: 'downloads',
+      label: '下载文件夹',
+      path: path.join(homedir, 'Downloads', 'xc-ego产出'),
+      recommended: false,
+    },
+  ];
+  const trimmedWs = String(workspaceDir || '').trim();
+  if (trimmedWs) {
+    list.push({
+      key: 'workspace',
+      label: '当前工作区目录',
+      path: path.join(path.resolve(trimmedWs), 'xc-ego产出'),
+      recommended: false,
+    });
+  }
+  return list;
+}
 
 const ABSOLUTE_DATE_FIELD_NAMES = new Set(['date', 'startDate', 'endDate', 'businessDate', 'dateRange']);
 const RELATIVE_DATE_WORDS = new Set(['今天', '昨天', '前天', '近7天', '近30天', '本周', '本月', 'today', 'yesterday']);
@@ -24,7 +51,7 @@ export function normalizeBrand(value) {
   if (!text) return null;
   if (text === '小仓' || text === '小仓生活') return '小仓';
   if (text === '乐心宜' || text === '小仓生活乐心宜') return '乐心宜';
-  throw new Error(`BRAND_INVALID: 不支持的中台名称「${text}」，仅支持「小仓」或「乐心宜」`);
+  return text;
 }
 
 export function defaultPreferences() {
@@ -32,12 +59,9 @@ export function defaultPreferences() {
     version: 1,
     defaultBrand: null,
     profiles: {
-      default: '采集',
-      hibo: '采集',
-      meituan: {
-        小仓: '小仓',
-        乐心宜: '乐心宜',
-      },
+      default: null,
+      hibo: null,
+      meituan: {},
     },
     outputRoot: null,
     storeGroups: {},
@@ -95,7 +119,7 @@ export async function loadPreferences(prefsPath = DEFAULT_PREFS_PATH) {
     const rawProfiles = parsed.profiles || {};
     const meituanProfiles = typeof rawProfiles.meituan === 'string'
       ? rawProfiles.meituan
-      : { ...base.profiles.meituan, ...(rawProfiles.meituan || {}) };
+      : { ...(rawProfiles.meituan || {}) };
     return {
       ...base,
       ...parsed,
@@ -114,15 +138,18 @@ export async function loadPreferences(prefsPath = DEFAULT_PREFS_PATH) {
 }
 
 export function resolveProfileName(prefs, { target = 'hibo', brand } = {}) {
+  const defaultProfile = prefs?.profiles?.default ? String(prefs.profiles.default).trim() : null;
   if (target === 'meituan') {
     const normalized = normalizeBrand(brand);
     const mt = prefs?.profiles?.meituan;
     if (typeof mt === 'string' && mt.trim()) return mt.trim();
-    if (!normalized) return null;
-    if (mt && typeof mt === 'object' && mt[normalized]) return mt[normalized];
-    return normalized;
+    if (normalized && mt && typeof mt === 'object' && mt[normalized]) {
+      return String(mt[normalized]).trim() || null;
+    }
+    return defaultProfile;
   }
-  return prefs?.profiles?.hibo || prefs?.profiles?.default || '采集';
+  const hiboProfile = prefs?.profiles?.hibo ? String(prefs.profiles.hibo).trim() : null;
+  return hiboProfile || defaultProfile || null;
 }
 
 const FIELD_KEY_ALIASES = new Map([
@@ -222,14 +249,19 @@ export function resolveParameters(prefs, { table, target, provided = {}, require
       if (profileName) {
         resolved[field] = profileName;
         sources[field] = effectiveTarget === 'meituan' ? 'meituanBrandProfile' : 'hiboProfile';
-      } else if (normRequiredFields.includes(field)) {
-        missing.push(field);
+      } else {
+        resolved[field] = null;
+        sources[field] = 'egoliteDefault';
       }
       continue;
     }
     if (field === 'outputRoot') {
-      resolved[field] = prefs.outputRoot || DEFAULT_OUTPUT_DIR;
-      sources[field] = prefs.outputRoot ? 'userOutputRoot' : 'skillOutputDir';
+      if (prefs.outputRoot) {
+        resolved[field] = prefs.outputRoot;
+        sources[field] = 'userOutputRoot';
+      } else if (normRequiredFields.includes('outputRoot')) {
+        missing.push('outputRoot');
+      }
       continue;
     }
     if (normRequiredFields.includes(field)) {
@@ -237,7 +269,14 @@ export function resolveParameters(prefs, { table, target, provided = {}, require
     }
   }
 
-  return { resolved, missing, sources };
+  return {
+    resolved,
+    missing,
+    sources,
+    ...(missing.includes('outputRoot')
+      ? { recommendedOutputRoots: getRecommendedOutputRoots({ workspaceDir: provided?.workspaceDir }) }
+      : {}),
+  };
 }
 
 export async function setDefault({
@@ -261,15 +300,22 @@ export async function setDefault({
     } else if (field === 'defaultBrand') {
       prefs.defaultBrand = normalizedValue;
     } else if (field === 'profile.default') {
-      prefs.profiles.default = normalizedValue || '采集';
+      prefs.profiles.default = normalizedValue || null;
     } else if (field === 'profile.hibo') {
-      prefs.profiles.hibo = normalizedValue || '采集';
-    } else if (field === 'profile.meituan.小仓' || field === 'profile.meituan.乐心宜') {
-      const brandKey = field.split('.').at(-1);
+      prefs.profiles.hibo = normalizedValue || null;
+    } else if (field === 'profile.meituan') {
+      prefs.profiles.meituan = normalizedValue || {};
+    } else if (field.startsWith('profile.meituan.')) {
+      const brandKey = normalizeBrand(field.slice('profile.meituan.'.length));
+      if (!brandKey) throw new Error('PREFS_MEITUAN_BRAND_REQUIRED');
       if (typeof prefs.profiles.meituan !== 'object' || prefs.profiles.meituan === null) {
-        prefs.profiles.meituan = { 小仓: '小仓', 乐心宜: '乐心宜' };
+        prefs.profiles.meituan = {};
       }
-      prefs.profiles.meituan[brandKey] = normalizedValue || brandKey;
+      if (normalizedValue) {
+        prefs.profiles.meituan[brandKey] = normalizedValue;
+      } else {
+        delete prefs.profiles.meituan[brandKey];
+      }
     } else if (field === 'storeGroup.default') {
       prefs.storeGroups['默认门店'] = normalizedValue;
     } else {
@@ -295,12 +341,13 @@ export async function clearDefault({
   if (scope === 'global') {
     if (field === 'outputRoot') prefs.outputRoot = null;
     else if (field === 'defaultBrand') prefs.defaultBrand = null;
-    else if (field === 'profile.default') prefs.profiles.default = '采集';
-    else if (field === 'profile.hibo') prefs.profiles.hibo = '采集';
-    else if (field === 'profile.meituan.小仓' || field === 'profile.meituan.乐心宜') {
-      const brandKey = field.split('.').at(-1);
-      if (prefs.profiles.meituan && typeof prefs.profiles.meituan === 'object') {
-        prefs.profiles.meituan[brandKey] = brandKey;
+    else if (field === 'profile.default') prefs.profiles.default = null;
+    else if (field === 'profile.hibo') prefs.profiles.hibo = null;
+    else if (field === 'profile.meituan') prefs.profiles.meituan = {};
+    else if (field.startsWith('profile.meituan.')) {
+      const brandKey = normalizeBrand(field.slice('profile.meituan.'.length));
+      if (brandKey && prefs.profiles.meituan && typeof prefs.profiles.meituan === 'object') {
+        delete prefs.profiles.meituan[brandKey];
       }
     } else if (field === 'storeGroup.default') delete prefs.storeGroups['默认门店'];
     else throw new Error(`PREFS_UNKNOWN_GLOBAL_FIELD: ${field}`);
@@ -401,6 +448,16 @@ export async function run(input) {
         field: req.field,
       });
       break;
+    case 'recommend-output-roots': {
+      const prefs = await loadPreferences(prefsPath);
+      result = {
+        ok: true,
+        prefsPath,
+        configuredOutputRoot: prefs.outputRoot || null,
+        recommended: getRecommendedOutputRoots({ workspaceDir: req.workspaceDir }),
+      };
+      break;
+    }
     case 'build-output-dir': {
       const prefs = await loadPreferences(prefsPath);
       const outputRoot = req.outputRoot || prefs.outputRoot || DEFAULT_OUTPUT_DIR;

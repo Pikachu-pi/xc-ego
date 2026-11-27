@@ -39,13 +39,24 @@ function inspectDom({ steps, operation, marker, callback }) {
         const trigger = roots[0];
         const anchor = trigger.getBoundingClientRect();
         const controls = trigger.getAttribute('aria-controls');
-        roots = query(document, '.hibo-dropdown:not(.hibo-dropdown-hidden),.ant-dropdown:not(.ant-dropdown-hidden)').filter((popup) => {
+        const allMenus = query(
+          document,
+          '.hibo-dropdown:not(.hibo-dropdown-hidden),.ant-dropdown:not(.ant-dropdown-hidden),[role="menu"]',
+        ).filter((popup) => shown(popup) && popup.getBoundingClientRect().width > 0 && popup.getBoundingClientRect().height > 0);
+        if (controls) {
+          const ctrlEl = document.getElementById(controls);
+          const controlled = allMenus.filter((popup) => popup.contains(ctrlEl));
+          if (controlled.length) {
+            roots = controlled;
+            continue;
+          }
+        }
+        const nearMenus = allMenus.filter((popup) => {
           const rect = popup.getBoundingClientRect();
-          if (!shown(popup) || !rect.width || !rect.height) return false;
-          if (controls) return popup.contains(document.getElementById(controls));
           const gap = Math.min(Math.abs(rect.top - anchor.bottom), Math.abs(anchor.top - rect.bottom));
-          return gap <= 12 && rect.right > anchor.left && rect.left < anchor.right;
+          return gap <= 32 && rect.right > anchor.left - 24 && rect.left < anchor.right + 24;
         });
+        roots = nearMenus.length ? nearMenus : (allMenus.length === 1 ? allMenus : []);
       } else if (step.has) {
         roots = roots.filter((root) => resolve(step.has, [root]).length > 0);
       } else if (step.text !== undefined) {
@@ -78,6 +89,7 @@ function inspectDom({ steps, operation, marker, callback }) {
     return true;
   }
   if (operation === 'open-dropdown' && shown(el) && !el.disabled) {
+    el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, composed: true }));
     el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, composed: true }));
     return true;
   }
@@ -217,17 +229,24 @@ export async function restoreTaskWindowForUser(task, page) {
   }
 }
 
-export async function openMinimizedTaskSpace(name, profileName = '采集') {
+export async function openMinimizedTaskSpace(name, profileName = null) {
   const all = await globalThis.profiles();
-  const matches = all.filter((profile) => profile.name === profileName);
-  if (matches.length !== 1) {
-    throw new Error(`PROFILE_NOT_UNIQUE: Ego 中未找到唯一名为「${profileName}」的资料`);
+  let chosen = null;
+  const requested = profileName ? String(profileName).trim() : '';
+  if (requested) {
+    const matches = all.filter((profile) => profile.name === requested);
+    if (matches.length !== 1) {
+      throw new Error(`PROFILE_NOT_UNIQUE: Ego 中未找到唯一名为「${requested}」的资料`);
+    }
+    chosen = matches[0];
+  } else {
+    chosen = all.find((profile) => profile.isDefault) || all[0] || null;
   }
-  const task = await globalThis.taskSpace(name, { profileId: matches[0].id });
+  const task = await globalThis.taskSpace(name, chosen ? { profileId: chosen.id } : {});
   const page = task.page('p1');
   try {
     await prepareTaskWindow(task, page);
-    return { task, page, profile: matches[0] };
+    return { task, page, profile: chosen };
   } catch (error) {
     await task.finish({ keep: [] }).catch(() => {});
     throw error;
@@ -351,9 +370,8 @@ export async function dismissObstructions(page) {
   if (promoResult === 'dom_closed') {
     await sleep(400);
   } else if (promoResult === 'fallback_click') {
-    const vp = await page.evaluate(() => ({ width: innerWidth || 1536, height: innerHeight || 748 }));
-    await page.mouse.click(Math.round(vp.width * 0.7565), Math.round(vp.height * 0.19), { label: '关闭海博推广弹窗' });
-    await sleep(500);
+    await page.keyboard.press('Escape').catch(() => {});
+    await sleep(300);
   }
 }
 
@@ -364,12 +382,15 @@ async function modalHasExportRecords(page) {
       const st = getComputedStyle(el);
       return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
     };
-    return [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog')]
+    return [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog,[role="dialog"]')]
       .filter(visible)
       .some((el) => {
         const text = el.innerText || '';
-        return el.classList.contains('hibo-export-record-dialog')
-          || (text.includes('导出记录') && text.includes('操作日期') && text.includes('任务名称'));
+        if (el.classList.contains('hibo-export-record-dialog')) return true;
+        const hasTitle = /(导入导出记录|导出记录)/.test(text);
+        const hasRecordSignals = /(创建时间|操作日期|任务名称|导出状态|下载|暂无数据)/.test(text)
+          || Boolean(el.querySelector('table,.hibo-table,.ant-table'));
+        return hasTitle && hasRecordSignals;
       });
   });
 }
@@ -383,13 +404,16 @@ export async function closeExportRecords(page) {
         const st = getComputedStyle(el);
         return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
       };
-      const modal = [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog')]
-        .filter(visible)
-        .find((el) => {
-          const text = el.innerText || '';
-          return el.classList.contains('hibo-export-record-dialog')
-            || (text.includes('导出记录') && text.includes('操作日期') && text.includes('任务名称'));
-        });
+    const modal = [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog,[role="dialog"]')]
+      .filter(visible)
+      .find((el) => {
+        const text = el.innerText || '';
+        if (el.classList.contains('hibo-export-record-dialog')) return true;
+        const hasTitle = /(导入导出记录|导出记录)/.test(text);
+        const hasRecordSignals = /(创建时间|操作日期|任务名称|导出状态|下载|暂无数据)/.test(text)
+          || Boolean(el.querySelector('table,.hibo-table,.ant-table'));
+        return hasTitle && hasRecordSignals;
+      });
       const closeBtn = modal?.querySelector('.hibo-modal-close,.ant-modal-close,[aria-label="Close"],[aria-label="close"]');
       if (!closeBtn || !visible(closeBtn)) return false;
       closeBtn.click();
@@ -444,6 +468,21 @@ export function pickOrgCandidate({ currentText = '', options = [], brand = '小�
       throw new Error(`BUSINESS_UNIT_AMBIGUOUS: 存在多个「乐心宜」业务单元候选 (${lxyOptions.map((o) => o.text).join(' / ')})，请用户明确指定`);
     }
     return { matched: chosen.text, option: chosen, alreadySelected: currentText === chosen.text };
+  }
+
+  const cleanBrand = String(brand || '').trim();
+  if (cleanBrand) {
+    if (currentText === cleanBrand) return { matched: cleanBrand, alreadySelected: true };
+    const exact = options.find((opt) => opt.text === cleanBrand);
+    if (exact) return { matched: exact.text, option: exact, alreadySelected: false };
+    const partial = options.filter((opt) => opt.text.includes(cleanBrand));
+    const nonStore = partial.filter((opt) => !opt.text.includes('仓店'));
+    if (nonStore.length === 1) return { matched: nonStore[0].text, option: nonStore[0], alreadySelected: currentText === nonStore[0].text };
+    if (partial.length === 1) return { matched: partial[0].text, option: partial[0], alreadySelected: currentText === partial[0].text };
+    if (partial.length > 1) {
+      throw new Error(`BUSINESS_UNIT_AMBIGUOUS: 存在多个「${cleanBrand}」业务单元候选 (${partial.map((o) => o.text).join(' / ')})，请用户明确指定`);
+    }
+    throw new Error(`BUSINESS_UNIT_NOT_FOUND: 未找到包含「${cleanBrand}」的业务单元，当前选项：${options.map((o) => o.text).join(' / ') || '无'}`);
   }
 
   throw new Error(`BRAND_INVALID: 不支持的中台「${brand}」`);
@@ -647,23 +686,41 @@ async function clickVisibleButtonByText(page, text, beforeClick = () => {}) {
 }
 
 async function openDropdownMenuItem(page, triggerText, itemText) {
-  const tryOpen = async () => {
+  const tryOpen = async (mode = 'hover') => {
     const dom = createDomLocator(page);
-    const trigger = dom.locator('button.hibo-dropdown-trigger:visible,button.ant-dropdown-trigger:visible')
-      .filter({ hasText: exactTextPattern(triggerText) });
-    await trigger.openDropdown();
-    const item = trigger.dropdownPopup().locator('[role="menuitem"]:visible').filter({ hasText: exactTextPattern(itemText) });
-    await item.waitFor({ timeout: 8000 });
-    if ((await item.count()) !== 1) throw new Error(`MENU_ITEM_NOT_UNIQUE: ${triggerText} -> ${itemText}`);
-    return item;
+    const trigger = dom.locator(
+      'button.hibo-dropdown-trigger:visible,button.ant-dropdown-trigger:visible,.hibo-dropdown-trigger:visible,.ant-dropdown-trigger:visible,button:visible,.hibo-btn:visible,.ant-btn:visible,[role="button"]:visible',
+    ).filter({ hasText: exactTextPattern(triggerText) }).first();
+    await trigger.waitFor({ timeout: 8000 });
+    if (mode === 'click') {
+      await trigger.activate();
+    } else {
+      await trigger.openDropdown();
+    }
+    const controlledItem = trigger.dropdownPopup().locator('[role="menuitem"]:visible,li.hibo-dropdown-menu-item:visible,li.ant-dropdown-menu-item:visible')
+      .filter({ hasText: exactTextPattern(itemText) });
+    try {
+      await controlledItem.waitFor({ timeout: 3000 });
+      if ((await controlledItem.count()) === 1) return controlledItem;
+    } catch {
+      // Fallback to any single visible menu item matching itemText in active dropdowns
+    }
+    const fallbackItem = dom.locator(
+      '.hibo-dropdown:not(.hibo-dropdown-hidden) [role="menuitem"]:visible,.ant-dropdown:not(.ant-dropdown-hidden) [role="menuitem"]:visible,.hibo-dropdown:not(.hibo-dropdown-hidden) li:visible,.ant-dropdown:not(.ant-dropdown-hidden) li:visible',
+    ).filter({ hasText: exactTextPattern(itemText) });
+    await fallbackItem.waitFor({ timeout: 3500 });
+    if ((await fallbackItem.count()) !== 1) throw new Error(`MENU_ITEM_NOT_UNIQUE: ${triggerText} -> ${itemText}`);
+    return fallbackItem;
   };
   await dismissObstructions(page);
-  try {
-    return await tryOpen();
-  } catch (error) {
-    await dismissObstructions(page);
-    return await tryOpen();
+  for (const mode of ['hover', 'click', 'hover']) {
+    try {
+      return await tryOpen(mode);
+    } catch {
+      await dismissObstructions(page);
+    }
   }
+  return tryOpen('click');
 }
 
 function normalizeRoute(route) {
@@ -791,15 +848,37 @@ function formItemByLabel(page, labelText) {
 }
 
 async function openStoreSelector(page, item) {
-  const input = item.locator('input.hibo-select-selection-search-input,input.ant-select-selection-search-input').first();
-  const selector = item.locator('.hibo-select-selector,.ant-select-selector').first();
+  const inputSelector = [
+    'input.hibo-select-selection-search-input',
+    'input.ant-select-selection-search-input',
+    'input[placeholder*="搜索"]',
+    'input[placeholder*="门店"]',
+    'input[type="search"]',
+    'input[type="text"]',
+  ].join(',');
+  const input = item.locator(inputSelector).first();
+  const selector = item.locator('.hibo-select-selector,.ant-select-selector,.hibo-cascader-picker,.ant-cascader-picker').first();
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await dismissObstructions(page);
-    if ((await input.getAttribute('aria-expanded')) === 'true') return input;
+    if ((await input.count()) > 0 && (await input.getAttribute('aria-expanded')) === 'true') return input;
     try {
-      await selector.click({ timeout: 3000 });
+      if ((await selector.count()) > 0) {
+        await selector.click({ timeout: 3000 });
+      } else if ((await input.count()) > 0) {
+        await input.click({ timeout: 3000 });
+      }
       await waitForCondition({
-        probe: async () => (await input.getAttribute('aria-expanded')) === 'true',
+        probe: async () => {
+          if ((await input.count()) > 0 && (await input.getAttribute('aria-expanded')) === 'true') return true;
+          return page.evaluate(() => {
+            const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+            return [...document.querySelectorAll('.hibo-select-dropdown,.hibo-cascader-dropdown,.ant-select-dropdown,.ant-cascader-dropdown')]
+              .some((d) => !d.classList.contains('hibo-select-dropdown-hidden')
+                && !d.classList.contains('hibo-cascader-dropdown-hidden')
+                && !d.classList.contains('ant-select-dropdown-hidden')
+                && visible(d));
+          });
+        },
         timeoutMs: 1500,
         intervalMs: 50,
         errorMessage: 'STORE_DROPDOWN_TIMEOUT',
@@ -988,11 +1067,50 @@ export async function listAvailableStores(
   return [...collected];
 }
 
+async function findWritableSearchInputInOpenDropdown(page) {
+  const marker = crypto.randomUUID();
+  const found = await page.evaluate((m) => {
+    const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+    const dropdowns = [...document.querySelectorAll('.hibo-select-dropdown,.hibo-cascader-dropdown,.ant-select-dropdown,.ant-cascader-dropdown,[role="listbox"]')]
+      .filter((d) => !d.classList.contains('hibo-select-dropdown-hidden')
+        && !d.classList.contains('hibo-cascader-dropdown-hidden')
+        && !d.classList.contains('ant-select-dropdown-hidden')
+        && visible(d));
+    const input = dropdowns
+      .flatMap((d) => [...d.querySelectorAll('input:not([type="checkbox"]):not([type="radio"]):not([disabled]):not([readonly])')])
+      .find(visible);
+    if (!input) return false;
+    input.setAttribute('data-xc-ego-search', m);
+    return true;
+  }, marker);
+  if (!found) return null;
+  return {
+    selector: `[data-xc-ego-search="${marker}"]`,
+    clearAttr: () => page.evaluate((m) => {
+      document.querySelector(`[data-xc-ego-search="${m}"]`)?.removeAttribute('data-xc-ego-search');
+    }, marker).catch(() => {}),
+  };
+}
+
 async function resolveStoreOption(page, item, storeQuery, brand = '') {
   const input = await openStoreSelector(page, item);
-  await input.waitFor({ state: 'visible', timeout: 5000 });
-  await input.fill(storeQuery);
-  await sleep(350);
+  let usedInput = false;
+  const dropdownInput = await findWritableSearchInputInOpenDropdown(page);
+  try {
+    if (dropdownInput) {
+      await page.fill(dropdownInput.selector, storeQuery);
+      usedInput = true;
+    } else if ((await input.count()) > 0) {
+      const canType = await input.evaluateAll((els) => els.some((el) => !el.disabled && !el.readOnly));
+      if (canType) {
+        await input.fill(storeQuery);
+        usedInput = true;
+      }
+    }
+  } finally {
+    if (dropdownInput) await dropdownInput.clearAttr();
+  }
+  await sleep(usedInput ? 450 : 200);
 
   const candidates = await page.evaluate(() => {
     const visible = (el) => {
@@ -1000,13 +1118,30 @@ async function resolveStoreOption(page, item, storeQuery, brand = '') {
       const st = getComputedStyle(el);
       return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
     };
-    return [...document.querySelectorAll('.hibo-cascader-menu-item[title],.ant-cascader-menu-item[title],[role="option"][title]')]
-      .filter(visible)
-      .map((el) => ({
-        title: (el.getAttribute('title') || '').trim(),
-        checked: el.getAttribute('aria-checked') === 'true',
-      }))
-      .filter((x) => x.title);
+    const popups = [...document.querySelectorAll('.hibo-select-dropdown,.hibo-cascader-dropdown,.ant-select-dropdown,.ant-cascader-dropdown,[role="listbox"]')]
+      .filter((d) => !d.classList.contains('hibo-select-dropdown-hidden')
+        && !d.classList.contains('hibo-cascader-dropdown-hidden')
+        && !d.classList.contains('ant-select-dropdown-hidden')
+        && visible(d));
+    const roots = popups.length ? popups : [document];
+    const nodes = roots.flatMap((root) => [...root.querySelectorAll(
+      '.hibo-cascader-menu-item,.ant-cascader-menu-item,[role="option"],.hibo-select-item-option,.ant-select-item-option',
+    )]);
+    const seen = new Set();
+    const list = [];
+    for (const el of nodes) {
+      if (!visible(el)) continue;
+      if (el.matches('.hibo-cascader-menu-item-expand,.ant-cascader-menu-item-expand')) continue;
+      if (el.querySelector('.hibo-cascader-menu-item-expand-icon,.ant-cascader-menu-item-expand-icon')) continue;
+      const title = String(el.getAttribute('title') || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!title || title.includes('暂无数据') || seen.has(title)) continue;
+      seen.add(title);
+      list.push({
+        title,
+        checked: el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true',
+      });
+    }
+    return list;
   });
 
   const exact = candidates.filter((c) => c.title === storeQuery);
@@ -1023,16 +1158,23 @@ async function resolveStoreOption(page, item, storeQuery, brand = '') {
     throw new Error(`STORE_AMBIGUOUS: 「${storeQuery}」匹配到多个门店 (${matched.map((m) => m.title).join(' / ')})，请给出更精确的门店名`);
   }
 
+  const targetTitle = matched[0].title;
   const dom = createDomLocator(page);
-  const quotedTitle = JSON.stringify(matched[0].title);
-  const option = dom.locator(
-    `.hibo-cascader-menu-item[title=${quotedTitle}]:visible,.ant-cascader-menu-item[title=${quotedTitle}]:visible,[role="option"][title=${quotedTitle}]:visible`,
+  const quotedTitle = JSON.stringify(targetTitle);
+  const byAttr = dom.locator(
+    `.hibo-cascader-menu-item[title=${quotedTitle}]:visible,.ant-cascader-menu-item[title=${quotedTitle}]:visible,[role="option"][title=${quotedTitle}]:visible,.hibo-select-item-option[title=${quotedTitle}]:visible,.ant-select-item-option[title=${quotedTitle}]:visible`,
   );
-  await option.waitFor({ timeout: 5000 });
-  if ((await option.count()) !== 1) {
-    throw new Error(`STORE_OPTION_NOT_UNIQUE: ${matched[0].title}`);
+  if ((await byAttr.count()) === 1) {
+    return { option: byAttr, fullName: targetTitle };
   }
-  return { option, fullName: matched[0].title };
+  const byText = dom.locator(
+    '.hibo-cascader-menu-item:visible,.ant-cascader-menu-item:visible,[role="option"]:visible,.hibo-select-item-option:visible,.ant-select-item-option:visible',
+  ).filter({ hasText: exactTextPattern(targetTitle) });
+  await byText.waitFor({ timeout: 5000 });
+  if ((await byText.count()) !== 1) {
+    throw new Error(`STORE_OPTION_NOT_UNIQUE: ${targetTitle}`);
+  }
+  return { option: byText, fullName: targetTitle };
 }
 
 async function tryClickFormResetButton(page, timeoutMs = 1500) {
@@ -1091,10 +1233,13 @@ export async function selectStoresAndVerify(page, storeLabel, requestedStores, {
   const resolvedNames = [];
   for (const storeQuery of requestedStores) {
     const { option, fullName } = await resolveStoreOption(page, item, storeQuery, brand);
-    if ((await option.getAttribute('aria-checked')) !== 'true') {
+    const isChecked = (await option.getAttribute('aria-checked')) === 'true'
+      || (await option.getAttribute('aria-selected')) === 'true';
+    if (!isChecked) {
       await option.activate();
       await waitForCondition({
-        probe: async () => (await option.getAttribute('aria-checked')) === 'true',
+        probe: async () => (await option.getAttribute('aria-checked')) === 'true'
+          || (await option.getAttribute('aria-selected')) === 'true',
         timeoutMs: 5000,
         intervalMs: 100,
         errorMessage: `STORE_CHECK_TIMEOUT: 门店点击后未保持选中 (${fullName})`,
@@ -1103,12 +1248,32 @@ export async function selectStoresAndVerify(page, storeLabel, requestedStores, {
     resolvedNames.push(fullName);
   }
 
-  for (const fullName of resolvedNames) {
+  await page.keyboard.press('Escape').catch(() => {});
+  const searchInput = item.locator('input.hibo-select-selection-search-input,input.ant-select-selection-search-input').first();
+  if ((await searchInput.count()) > 0) {
+    await searchInput.blur().catch(() => {});
+  }
+
+  const selectedSnapshot = await item.locator('.hibo-select-selection-item,.ant-select-selection-item')
+    .evaluateAll((els) => els
+      .filter((el) => !el.closest('.hibo-select-selection-overflow-item-rest,.ant-select-selection-overflow-item-rest'))
+      .map((el) => String(el.getAttribute('title') || el.textContent || '').trim())
+      .filter((text) => text && !/^\+\s*\d+/.test(text)));
+
+  const hasCollapsedOverflow = await item.locator('.hibo-select-selection-overflow-item-rest,.ant-select-selection-overflow-item-rest').count();
+  const missingOnTagReadback = hasCollapsedOverflow
+    ? []
+    : resolvedNames.filter((name) => !selectedSnapshot.some((tag) => tag === name || tag.includes(name)));
+
+  for (const fullName of missingOnTagReadback) {
     const { option } = await resolveStoreOption(page, item, fullName, brand);
-    if ((await option.getAttribute('aria-checked')) !== 'true') {
+    const isChecked = (await option.getAttribute('aria-checked')) === 'true'
+      || (await option.getAttribute('aria-selected')) === 'true';
+    if (!isChecked) {
       await option.activate();
       await waitForCondition({
-        probe: async () => (await option.getAttribute('aria-checked')) === 'true',
+        probe: async () => (await option.getAttribute('aria-checked')) === 'true'
+          || (await option.getAttribute('aria-selected')) === 'true',
         timeoutMs: 5000,
         intervalMs: 100,
         errorMessage: `STORE_REPAIR_FAILED: 门店回读复核未选中 (${fullName})`,
@@ -1116,12 +1281,18 @@ export async function selectStoresAndVerify(page, storeLabel, requestedStores, {
     }
   }
 
-  await item.locator('input.hibo-select-selection-search-input,input.ant-select-selection-search-input').first().blur();
+  if (missingOnTagReadback.length && (await searchInput.count()) > 0) {
+    await searchInput.blur().catch(() => {});
+  }
   return resolvedNames;
 }
 
 export async function selectChannelAndVerify(page, channelLabel, channelValue) {
-  if (!channelValue) throw new Error('CHANNEL_EMPTY: 必须指定渠道');
+  const requestedChannels = (Array.isArray(channelValue) ? channelValue : [channelValue])
+    .map((v) => String(v || '').trim())
+    .filter(Boolean);
+  if (!requestedChannels.length) throw new Error('CHANNEL_EMPTY: 必须指定渠道');
+
   const dom = createDomLocator(page);
   const item = dom.locator('.hibo-form-item:visible,.ant-form-item:visible').filter({ has: dom.getByText(channelLabel) });
   if ((await item.count()) !== 1) throw new Error(`CHANNEL_CONTROL_MISSING: ${channelLabel}`);
@@ -1129,9 +1300,12 @@ export async function selectChannelAndVerify(page, channelLabel, channelValue) {
   const selected = item.locator('.hibo-select-selection-item,.ant-select-selection-item');
   const readSelected = () => selected.evaluateAll((els) => els
     .filter((el) => !el.closest('.hibo-select-selection-overflow-item-rest,.ant-select-selection-overflow-item-rest'))
-    .map((el) => (el.getAttribute('title') || el.textContent || '').trim()));
+    .map((el) => (el.getAttribute('title') || el.textContent || '').trim())
+    .filter((text) => text && !/^\+\s*\d+/.test(text)));
 
-  const isExact = (vals) => vals.length === 1 && vals[0] === channelValue;
+  const isExact = (vals) => vals.length === requestedChannels.length
+    && requestedChannels.every((target) => vals.includes(target));
+
   if (!isExact(await readSelected())) {
     const remove = item.locator('.hibo-select-selection-item-remove,.ant-select-selection-item-remove');
     for (let guard = 10; guard > 0 && (await remove.count()); guard -= 1) {
@@ -1139,26 +1313,41 @@ export async function selectChannelAndVerify(page, channelLabel, channelValue) {
     }
     await item.locator('.hibo-select-selector,.ant-select-selector').click();
     const listId = await item.locator('input[aria-controls]').getAttribute('aria-controls');
-    if (!listId) throw new Error(`CHANNEL_LIST_UNBOUND: ${channelLabel}`);
-    const dropdown = dom.locator('.hibo-select-dropdown:visible,.ant-select-dropdown:visible')
-      .filter({ has: dom.locator(`[id=${JSON.stringify(listId)}]`) });
-    const option = dropdown.locator('.hibo-select-item-option:visible,.ant-select-item-option:visible')
-      .filter({ hasText: exactTextPattern(channelValue) });
-    await option.waitFor({ timeout: 5000 });
-    if ((await option.count()) !== 1) throw new Error(`CHANNEL_OPTION_NOT_UNIQUE: ${channelValue}`);
-    await option.activate();
+    const dropdown = listId
+      ? dom.locator('.hibo-select-dropdown:visible,.ant-select-dropdown:visible')
+        .filter({ has: dom.locator(`[id=${JSON.stringify(listId)}]`) })
+      : dom.locator('.hibo-select-dropdown:visible,.ant-select-dropdown:visible').last();
+
+    const searchInput = item.locator('input.hibo-select-selection-search-input,input.ant-select-selection-search-input').first();
+    const canTypeInChannel = (await searchInput.count()) > 0
+      && await searchInput.evaluateAll((els) => els.some((el) => !el.disabled && !el.readOnly));
+
+    for (const ch of requestedChannels) {
+      if (canTypeInChannel) {
+        await searchInput.fill(ch);
+        await sleep(250);
+      }
+      const option = dropdown.locator('.hibo-select-item-option:visible,.ant-select-item-option:visible,[role="option"]:visible')
+        .filter({ hasText: exactTextPattern(ch) });
+      await option.waitFor({ timeout: 5000 });
+      if ((await option.count()) !== 1) throw new Error(`CHANNEL_OPTION_NOT_UNIQUE: ${ch}`);
+      await option.activate();
+    }
     await waitForCondition({
       probe: async () => isExact(await readSelected()),
       timeoutMs: 5000,
       intervalMs: 100,
-      errorMessage: `CHANNEL_VERIFY_FAILED: ${channelLabel} 期望仅选中「${channelValue}」`,
+      errorMessage: `CHANNEL_VERIFY_FAILED: ${channelLabel} 期望选中「${requestedChannels.join('、')}」`,
     });
   }
   await page.keyboard.press('Escape').catch(() => {});
-  await item.locator('input').first().blur();
+  const chInput = item.locator('input').first();
+  if ((await chInput.count()) > 0) {
+    await chInput.blur().catch(() => {});
+  }
   const finalVals = await readSelected();
   if (!isExact(finalVals)) throw new Error(`CHANNEL_MISMATCH: 实际为 ${finalVals.join('、')}`);
-  return finalVals[0];
+  return Array.isArray(channelValue) ? finalVals : finalVals[0];
 }
 
 function findRangePickerLocator(page, label = '') {
@@ -1349,6 +1538,29 @@ export async function selectDateRangeAndVerify(
     throw new Error('DATE_PICKER_NOT_UNIQUE: 页面存在多个日期选择器，请指定 label');
   }
   const startInput = picker.locator('input').first();
+  const endInput = picker.locator('input').last();
+  const inputsWritable = await picker.locator('input').evaluateAll(
+    (els) => els.length >= 2 && els.every((el) => !el.disabled && !el.readOnly),
+  ).catch(() => false);
+  if (inputsWritable) {
+    try {
+      await startInput.click({ timeout: 5000 });
+      await startInput.fill(startDate);
+      await startInput.press('Enter').catch(() => {});
+      await sleep(120);
+      await endInput.click({ timeout: 5000 });
+      await endInput.fill(endDate);
+      await endInput.press('Enter').catch(() => {});
+      await sleep(150);
+      await clickOpenDateOkButton(page).catch(() => false);
+      await page.keyboard.press('Escape').catch(() => {});
+      await sleep(200);
+      return await verifyDateRangeInputs(page, { startDate, endDate, label });
+    } catch {
+      // Direct typing did not stick; fall back to calendar panel selection
+    }
+  }
+
   await startInput.click({ timeout: 5000 });
 
   await waitForCondition({
@@ -1421,6 +1633,8 @@ export async function queryTableAndReadCount(page, timeoutMs = 60000) {
           const visible = (el) => !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
           const tableRoots = [...document.querySelectorAll('.hibo-table-wrapper,.ant-table-wrapper')]
             .filter((el) => visible(el) && !el.closest('[role="dialog"],.hibo-modal,.ant-modal'));
+          const pagTotals = [...document.querySelectorAll('.hibo-pagination-total-text,.ant-pagination-total-text')]
+            .filter((el) => visible(el) && !el.closest('[role="dialog"],.hibo-modal,.ant-modal'));
           let root;
           let scopeRoot;
           let loadingRoot;
@@ -1428,10 +1642,7 @@ export async function queryTableAndReadCount(page, timeoutMs = 60000) {
             root = tableRoots[0];
             scopeRoot = root.closest('.hibo-module-card,.ant-card,.resource-list.table-online-goods-page,.resource-list.table-store-goods-page,.active-list-page>.bg-common,.order-manage-table-page') || root;
             loadingRoot = root.parentElement?.closest('.hibo-spin-nested-loading,.ant-spin-nested-loading') || root;
-          } else if (tableRoots.length === 0) {
-            const pagTotals = [...document.querySelectorAll('.hibo-pagination-total-text,.ant-pagination-total-text')]
-              .filter((el) => visible(el) && !el.closest('[role="dialog"],.hibo-modal,.ant-modal'));
-            if (pagTotals.length !== 1) throw new Error('QUERY_TABLE_SCOPE_UNVERIFIED');
+          } else if (pagTotals.length === 1) {
             scopeRoot = pagTotals[0].closest('.order-manage-table-page,.hibo-module-card,.ant-card,[class*="table-page"],[class*="list-page"]')
               || pagTotals[0].closest('.hibo-cache-route')
               || pagTotals[0].parentElement?.parentElement;
@@ -1441,7 +1652,9 @@ export async function queryTableAndReadCount(page, timeoutMs = 60000) {
               || scopeRoot.closest('.hibo-spin-nested-loading,.ant-spin-nested-loading')
               || scopeRoot;
           } else {
-            throw new Error('QUERY_TABLE_SCOPE_UNVERIFIED');
+            scopeRoot = document.querySelector('.hibo-cache-route,.ant-layout-content,main') || document.body;
+            root = tableRoots[0] || scopeRoot;
+            loadingRoot = scopeRoot.querySelector('.hibo-spin-nested-loading,.ant-spin-nested-loading') || scopeRoot;
           }
 
           const busy = () => root.getAttribute('aria-busy') === 'true'
@@ -1486,15 +1699,27 @@ export async function queryTableAndReadCount(page, timeoutMs = 60000) {
           if ((document.body?.innerText || '').includes('当前网络环境较差')) return { networkError: true };
           const totals = [...cur.scopeRoot.querySelectorAll('.hibo-pagination-total-text,.ant-pagination-total-text')]
             .filter(cur.visible);
-          if (totals.length !== 1) throw new Error('QUERY_ROW_COUNT_UNAVAILABLE');
-          const currentTotalText = (totals[0].innerText || '').trim();
+          const currentTotalText = totals.length === 1 ? (totals[0].innerText || '').trim() : '';
           const settledByTimeOrChange = (cur.initialTotalText && currentTotalText !== cur.initialTotalText)
             || (Date.now() - cur.startedAt >= 2500);
           if (!cur.sawLoading && !settledByTimeOrChange) return null;
-          const matches = [...currentTotalText.matchAll(/共\s*([\d,]+)\s*条/g)];
-          if (matches.length !== 1) throw new Error('QUERY_ROW_COUNT_UNAVAILABLE');
-          const rowCount = Number(matches[0][1].replace(/,/g, ''));
-          return { rowCount, empty: rowCount === 0, networkError: false };
+          if (totals.length === 1) {
+            const matches = [...currentTotalText.matchAll(/共\s*([\d,]+)\s*条/g)];
+            if (matches.length === 1) {
+              const rowCount = Number(matches[0][1].replace(/,/g, ''));
+              return { rowCount, empty: rowCount === 0, countSource: 'pagination', networkError: false };
+            }
+          }
+          const visibleRows = [...cur.scopeRoot.querySelectorAll('.hibo-table-tbody tr:not(.hibo-table-measure-row),.ant-table-tbody tr:not(.ant-table-measure-row)')]
+            .filter((tr) => cur.visible(tr) && !tr.classList.contains('hibo-table-placeholder') && !tr.classList.contains('ant-table-placeholder'));
+          if (visibleRows.length > 0) {
+            return { rowCount: visibleRows.length, empty: false, countSource: 'visible_rows', networkError: false };
+          }
+          const hasEmptyPlaceholder = Boolean(cur.scopeRoot.querySelector('.hibo-empty,.ant-empty,.hibo-table-placeholder,.ant-table-placeholder'));
+          if (hasEmptyPlaceholder) {
+            return { rowCount: 0, empty: true, countSource: 'empty_placeholder', networkError: false };
+          }
+          return { rowCount: null, empty: false, countSource: 'unavailable', networkError: false };
         }, key);
 
         if (result?.networkError) {
@@ -1587,14 +1812,23 @@ async function openExportRecords(page, report) {
   if (report.recordMenuText && report.recordButtons?.length) {
     const item = await openDropdownMenuItem(page, report.recordButtons[0], report.recordMenuText);
     await item.activate();
-    return waitRecords();
+    await waitRecords();
+    return;
   }
-  for (const label of report.recordButtons || ['导出记录']) {
+  const labels = report.recordButtons?.length ? report.recordButtons : ['导出记录', '导入导出记录'];
+  for (const label of labels) {
     try {
       await clickVisibleButtonByText(page, label);
       return await waitRecords();
     } catch {
-      // try next label
+      // If it is a dropdown trigger like 「导入导出记录」, try its menu item 「导出记录」
+      try {
+        const item = await openDropdownMenuItem(page, label, '导出记录');
+        await item.activate();
+        return await waitRecords();
+      } catch {
+        // try next label
+      }
     }
   }
   throw new Error('OPEN_EXPORT_RECORDS_FAILED: 未能打开导出记录');
@@ -1608,12 +1842,15 @@ async function refreshExportRecords(page) {
       const st = getComputedStyle(el);
       return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
     };
-    const modal = [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog')]
+    const modal = [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog,[role="dialog"]')]
       .filter(visible)
       .find((el) => {
         const text = el.innerText || '';
-        return el.classList.contains('hibo-export-record-dialog')
-          || (text.includes('导出记录') && text.includes('操作日期') && text.includes('任务名称'));
+        if (el.classList.contains('hibo-export-record-dialog')) return true;
+        const hasTitle = /(导入导出记录|导出记录)/.test(text);
+        const hasRecordSignals = /(创建时间|操作日期|任务名称|导出状态|下载|暂无数据)/.test(text)
+          || Boolean(el.querySelector('table,.hibo-table,.ant-table'));
+        return hasTitle && hasRecordSignals;
       });
     if (!modal) return false;
     const btn = [...modal.querySelectorAll('button,.hibo-btn,.ant-btn')]
@@ -1646,25 +1883,30 @@ export function filterMatchingExportRows(
   const cleanHints = Array.isArray(hints) ? hints.filter(Boolean) : [];
   const cleanOps = Array.isArray(operators) ? operators.filter(Boolean) : [];
   const excludedSet = new Set(Array.isArray(excludedSignatures) ? excludedSignatures.filter(Boolean) : []);
-  const filtered = (Array.isArray(rows) ? rows : [])
+  const timeValid = (Array.isArray(rows) ? rows : [])
     .filter((item) => item?.text && !excludedSet.has(buildExportRecordSignature(item)))
-    .filter((item) => !startedAt || (item.created && item.created >= startedAt - clockSkewMs))
-    .filter((item) => !cleanHints.length || cleanHints.some((h) => item.text.includes(h)));
+    .filter((item) => !startedAt || (item.created && item.created >= startedAt - clockSkewMs));
 
   const owned = cleanOps.length
-    ? filtered.filter((item) => cleanOps.some((op) => item.text.includes(op)))
-    : filtered;
-  const pool = (owned.length ? owned : (cleanOps.length ? [] : filtered))
+    ? timeValid.filter((item) => cleanOps.some((op) => item.text.includes(op)))
+    : timeValid;
+  const basePool = owned.length ? owned : (cleanOps.length ? [] : timeValid);
+  if (!basePool.length) return null;
+
+  const hintMatched = cleanHints.length
+    ? basePool.filter((item) => cleanHints.some((h) => item.text.includes(h)))
+    : [];
+  const usingHintFallback = cleanHints.length > 0 && hintMatched.length === 0;
+  const pool = (hintMatched.length ? hintMatched : basePool)
     .slice()
     .sort((a, b) => b.created - a.created);
 
-  if (!pool.length) return null;
   const newestTime = pool[0].created;
   const tied = pool.filter((m) => m.created === newestTime);
   if (tied.length > 1) {
     throw new Error(`EXPORT_RECORD_AMBIGUOUS: 存在多条创建时间相同的候选导出记录：${tied.map((t) => t.text).join(' | ')}`);
   }
-  return pool[0];
+  return usingHintFallback ? { ...pool[0], hintFallback: true } : pool[0];
 }
 
 async function loadRecentDeliveredSignatures(recentExportsPath = DEFAULT_RECENT_EXPORTS_PATH, nowMs = Date.now()) {
@@ -1707,53 +1949,56 @@ async function recordDeliveredSignature(row, recentExportsPath = DEFAULT_RECENT_
 }
 
 async function findMatchingExportRow(page, { hints, submittedAt, operatorNames, excludedSignatures = [] }) {
-  const rows = await page.evaluate(() => {
+  const snapshot = await page.evaluate(() => {
     const visible = (el) => {
       const r = el.getBoundingClientRect();
       const st = getComputedStyle(el);
       return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
     };
     const parseCreatedAt = (text) => {
-      const m = String(text).match(/创建时间[:：]\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
+      const m = String(text).match(/创建时间[:：]\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/)
+        || String(text).match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/);
       if (!m) return 0;
-      const ms = new Date(`${m[1]}T${m[2]}+08:00`).getTime();
+      const normalized = m[2] ? `${m[1]}T${m[2]}+08:00` : `${m[1].replace(' ', 'T')}+08:00`;
+      const ms = new Date(normalized).getTime();
       return Number.isNaN(ms) ? 0 : ms;
     };
-    const modal = [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog')]
+    const modal = [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog,[role="dialog"]')]
       .filter(visible)
       .find((el) => {
         const text = el.innerText || '';
-        return el.classList.contains('hibo-export-record-dialog')
-          || (text.includes('导出记录') && text.includes('操作日期') && text.includes('任务名称'));
+        if (el.classList.contains('hibo-export-record-dialog')) return true;
+        const hasTitle = /(导入导出记录|导出记录)/.test(text);
+        const hasRecordSignals = /(创建时间|操作日期|任务名称|导出状态|下载|暂无数据)/.test(text)
+          || Boolean(el.querySelector('table,.hibo-table,.ant-table'));
+        return hasTitle && hasRecordSignals;
       });
-    if (!modal) return [];
+    if (!modal) return { hasModal: false, rows: [] };
 
-    return [...modal.querySelectorAll('.hibo-table-tbody tr,.ant-table-tbody tr,table tr')]
+    const rows = [...modal.querySelectorAll('.hibo-table-tbody tr,.ant-table-tbody tr,table tr')]
       .filter(visible)
-      .map((row) => {
+      .map((row, rowIndex) => {
         const text = String(row.innerText || row.textContent || '').replace(/\s+/g, ' ').trim();
         const icon = row.querySelector('.hibo-export-record-download-icon,[class*="download-icon"],[class*="downloadIcon"],.anticon-download,a');
-        let iconPosition = null;
-        if (icon && visible(icon)) {
-          const r = icon.getBoundingClientRect();
-          iconPosition = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-        }
         return {
+          rowIndex,
           text: text.slice(0, 260),
           created: parseCreatedAt(text),
           completed: text.includes('完成'),
           failed: text.includes('失败') || text.includes('已中断'),
-          iconPosition,
+          hasDownloadIcon: Boolean(icon && visible(icon)),
         };
       });
+    return { hasModal: true, rows };
   });
 
-  return filterMatchingExportRows(rows, {
+  const matched = filterMatchingExportRows(snapshot.rows, {
     hints,
     startedAt: submittedAt,
     operators: operatorNames,
     excludedSignatures,
   });
+  return { hasModal: snapshot.hasModal, totalRows: snapshot.rows.length, matched };
 }
 
 async function waitForBrowserDownloadComplete(statusPage, filePath, timeoutMs = 120000) {
@@ -1780,21 +2025,37 @@ async function waitForBrowserDownloadComplete(statusPage, filePath, timeoutMs = 
   throw new Error(`DOWNLOAD_STATE_TIMEOUT: 未在 chrome://downloads/ 确认完成 (${path.basename(filePath)})`);
 }
 
-async function saveCompletedDownload(task, page, iconPosition, destinationPath) {
+async function saveCompletedDownload(task, page, matchedRow, destinationPath) {
   const activateDownload = async () => {
-    const clicked = await page.evaluate(({ x, y }) => {
-      const candidates = [...new Set([...document.querySelectorAll(
-        '.hibo-export-record-download-icon,[class*="download-icon"],[class*="downloadIcon"],.anticon-download,a',
-      )].map((el) => el.closest('a') || el))].filter((el) => {
+    const clicked = await page.evaluate(({ targetText, rowIndex }) => {
+      const visible = (el) => {
         const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'
-          && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-      });
-      if (candidates.length !== 1) return false;
-      candidates[0].click();
+        const st = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
+      };
+      const modal = [...document.querySelectorAll('.hibo-modal-wrap,.ant-modal-wrap,.zt-dialog-wrapper,.zt-dialog,[role="dialog"]')]
+        .filter(visible)
+        .find((el) => {
+          const text = el.innerText || '';
+          if (el.classList.contains('hibo-export-record-dialog')) return true;
+          const hasTitle = /(导入导出记录|导出记录)/.test(text);
+          const hasRecordSignals = /(创建时间|操作日期|任务名称|导出状态|下载|暂无数据)/.test(text)
+            || Boolean(el.querySelector('table,.hibo-table,.ant-table'));
+          return hasTitle && hasRecordSignals;
+        });
+      if (!modal) return false;
+      const rows = [...modal.querySelectorAll('.hibo-table-tbody tr,.ant-table-tbody tr,table tr')].filter(visible);
+      const exactMatches = rows.filter(
+        (r) => String(r.innerText || r.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 260) === targetText,
+      );
+      const targetRow = exactMatches.length === 1 ? exactMatches[0] : rows[rowIndex];
+      if (!targetRow) return false;
+      const icon = targetRow.querySelector('.hibo-export-record-download-icon,[class*="download-icon"],[class*="downloadIcon"],.anticon-download,a');
+      if (!icon || !visible(icon)) return false;
+      (icon.closest('a,button') || icon).click();
       return true;
-    }, iconPosition);
-    if (!clicked) throw new Error('DOWNLOAD_ICON_NOT_UNIQUE: 下载图标位置无法唯一对应页面元素');
+    }, { targetText: matchedRow.text, rowIndex: matchedRow.rowIndex });
+    if (!clicked) throw new Error('DOWNLOAD_ICON_NOT_UNIQUE: 未能定位匹配记录行的下载图标');
   };
 
   const [download] = await Promise.all([
@@ -1842,25 +2103,48 @@ async function pollAndDownload(page, task, {
   const timeoutMs = Number(timeoutMinutes) * 60000;
   const started = Date.now();
   let lastRefresh = 0;
+  let consecutiveReopenFailures = 0;
 
   while (Date.now() - started < timeoutMs) {
     await dismissObstructions(page);
     if (!(await modalHasExportRecords(page))) {
-      await openExportRecords(page, report);
+      try {
+        await openExportRecords(page, report);
+        consecutiveReopenFailures = 0;
+      } catch (err) {
+        consecutiveReopenFailures += 1;
+        if (consecutiveReopenFailures >= 3) {
+          throw new Error(`EXPORT_RECORDS_REOPEN_STUCK: 连续 ${consecutiveReopenFailures} 次打开导出记录失败 (${err.message})，请检查页面后凭 _recovery.json 继续`);
+        }
+        await sleep(2000);
+        continue;
+      }
+    } else {
+      consecutiveReopenFailures = 0;
     }
-    if (Date.now() - lastRefresh >= 10000) {
-      if (await refreshExportRecords(page)) lastRefresh = Date.now();
-    }
-    const row = await findMatchingExportRow(page, {
+
+    let lookup = await findMatchingExportRow(page, {
       hints: report.recordHints,
       submittedAt,
       operatorNames,
       excludedSignatures,
     });
+    if (lookup.hasModal && (lookup.totalRows === 0 || Date.now() - lastRefresh >= 10000)) {
+      if (await refreshExportRecords(page)) {
+        lastRefresh = Date.now();
+        lookup = await findMatchingExportRow(page, {
+          hints: report.recordHints,
+          submittedAt,
+          operatorNames,
+          excludedSignatures,
+        });
+      }
+    }
+    const row = lookup.matched;
     if (row) {
       if (row.failed) throw new Error(`HIBO_EXPORT_FAILED: ${row.text}`);
-      if (row.completed && row.iconPosition) {
-        await saveCompletedDownload(task, page, row.iconPosition, destinationPath);
+      if (row.completed && row.hasDownloadIcon) {
+        await saveCompletedDownload(task, page, row, destinationPath);
         const xlsxInfo = await verifyXlsxFile(destinationPath);
         await recordDeliveredSignature(row, recentExportsPath);
         if (recoveryPath) {

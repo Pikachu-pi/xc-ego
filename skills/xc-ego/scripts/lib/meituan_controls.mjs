@@ -50,16 +50,17 @@ export function classifyMeituanPoiPageSnapshot({
   bodyText = '',
   hasBranchTable = false,
 } = {}) {
-  if (/wmPoiId参数异常|数据加载异常/.test(bodyText)) {
+  const cleanText = String(bodyText || '').replace(/\s+/g, ' ').trim();
+  if (/wmPoiId参数异常|数据加载异常/.test(cleanText)) {
     return { mode: 'wmPoiId_error', ready: false, url };
   }
-  if (hasBranchTable || /分店名称搜索|分店id|搜索结果（共\d+家）/.test(bodyText)) {
+  if (hasBranchTable || /分店名称搜索|分店id|搜索结果（共\d+家）/.test(cleanText)) {
     return { mode: 'chain_list', ready: true, url };
   }
-  if (/配送方案|起送价设置|顾客配送费设置|正常时段/.test(bodyText)) {
-    return { mode: 'single_store', ready: true, url };
+  if (cleanText.length < 6 || /^(loading|加载中|正在加载)[\s.…]*$/i.test(cleanText)) {
+    return { mode: 'unknown', ready: false, url };
   }
-  return { mode: 'unknown', ready: false, url };
+  return { mode: 'single_store', ready: true, url };
 }
 
 export async function openMeituanTaskSpace(
@@ -67,24 +68,34 @@ export async function openMeituanTaskSpace(
   { brand, profileName, prefsPath = DEFAULT_PREFS_PATH } = {},
 ) {
   const normalizedBrand = normalizeBrand(brand);
+  const allProfiles = await globalThis.profiles();
   let targetProfileName = profileName ? String(profileName).trim() : '';
   if (!targetProfileName) {
-    if (!normalizedBrand) {
-      throw new Error('MEITUAN_BRAND_REQUIRED: 打开美团资料窗口必须指定 brand（小仓 / 乐心宜）或 profileName');
-    }
     const prefs = await loadPreferences(prefsPath);
-    targetProfileName = resolveProfileName(prefs, { target: 'meituan', brand: normalizedBrand });
+    targetProfileName = resolveProfileName(prefs, { target: 'meituan', brand: normalizedBrand }) || '';
   }
-  const allProfiles = await globalThis.profiles();
-  const matches = allProfiles.filter((item) => item.name === targetProfileName);
-  if (matches.length !== 1) {
-    throw new Error(`PROFILE_NOT_UNIQUE: Ego 中未找到唯一名为「${targetProfileName}」的美团资料`);
+
+  let chosen = null;
+  if (targetProfileName) {
+    const matches = allProfiles.filter((item) => item.name === targetProfileName);
+    if (matches.length !== 1) {
+      throw new Error(`PROFILE_NOT_UNIQUE: Ego 中未找到唯一名为「${targetProfileName}」的美团资料`);
+    }
+    chosen = matches[0];
+  } else {
+    const brandMatched = normalizedBrand
+      ? allProfiles.filter((item) => item.name === normalizedBrand)
+      : [];
+    chosen = brandMatched.length === 1
+      ? brandMatched[0]
+      : (allProfiles.find((item) => item.isDefault) || allProfiles[0] || null);
   }
-  const task = await globalThis.taskSpace(name, { profileId: matches[0].id });
+
+  const task = await globalThis.taskSpace(name, chosen ? { profileId: chosen.id } : {});
   const page = task.page('p1');
   try {
     await prepareTaskWindow(task, page);
-    return { task, page, profile: matches[0], brand: normalizedBrand };
+    return { task, page, profile: chosen, brand: normalizedBrand };
   } catch (error) {
     await task.finish({ keep: [] }).catch(() => {});
     throw error;
@@ -112,9 +123,9 @@ export async function readMeituanHeaderStore(page) {
 
       const exactAll = candidates.find((x) => x.text === '全部门店');
       if (exactAll) return '全部门店';
-      const leafStoreLike = candidates.find((x) => x.children === 0 && /[（(].+[)）]|店$/.test(x.text) && !/门店管理|分店/.test(x.text));
+      const leafStoreLike = candidates.find((x) => x.children === 0 && /[（(].+[)）]|(店|仓|超市)$/.test(x.text) && !/门店管理|分店/.test(x.text));
       if (leafStoreLike) return leafStoreLike.text;
-      const storeLike = candidates.find((x) => /[（(].+[)）]|店$/.test(x.text) && !/门店管理|分店/.test(x.text));
+      const storeLike = candidates.find((x) => /[（(].+[)）]|(店|仓|超市)$/.test(x.text) && !/门店管理|分店/.test(x.text));
       if (storeLike) return storeLike.text;
       const leaf = candidates.find((x) => x.children === 0 && !/^\d+$/.test(x.text) && !/^xc[a-z0-9]+$/i.test(x.text));
       return leaf ? leaf.text : '';

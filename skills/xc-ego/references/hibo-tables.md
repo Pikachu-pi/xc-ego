@@ -1,90 +1,60 @@
-# 海博中台报表与操作手册
+# 海博中台通用操作方法与底层原语
 
 - **海博入口**：`https://zt.hiboos.com/index.html`
-- **双中台共用入口**：小仓与乐心宜共用同一个 EgoLite 资料（默认 `采集`）与页面流程，在页内按 `brand`（`小仓` / `乐心宜`）切换并校验顶部业务单元。
-- **执行策略**：不预置固定报表清单；所有海博报表导出与页面操作均按下方 SOP 通过 `ego-browser nodejs` 执行，并复用 `scripts/lib/hibo_controls.mjs` 与 `scripts/lib/xlsx_check.mjs` 的通用底层原语；单次新操作跑通后，由用户按需选择固化到 `~/.xc-ego/workflows/`（详见 [workflow-crystallization.md](workflow-crystallization.md)）。
+- **默认资料即用**：单资料即可打开海博，在页内按用户目标中台（小仓 / 乐心宜或其他业务单元）切换并校验顶部业务单元；若用户在 `~/.xc-ego/preferences.json` 绑定了专用资料名则优先使用。
+- **执行策略**：不预置固定报表清单，也不把页面细节写死成僵化步骤；所有页面操作遵循下方**通用方法论**，灵活配合 `page.snapshot()` 与 `scripts/lib/hibo_controls.mjs` 完成任务。
 
 ---
 
-## 一、海博中台标准操作 SOP
+## 一、五条通用操作方法论（比死记坑位更可靠）
 
-### 1. 适用范围
-覆盖海博后台任意页面与报表操作，包括但不限于：订单数据/订单日报表、商品与价格管理、毛利分析、效期管理、门店商品销售、营销活动配置与批量导出等。
+### 1. 先看现场再出手，绝不死循环重试
+- 任何点击、下拉、弹窗未按预期展开时，**立刻用 `page.snapshot()` 看清当前 DOM 语义树**（是否被空闲弹窗遮挡、菜单是不是“点开”而非“悬停”、弹层标题是不是略微改名），找准原因后再调整动作；
+- 禁止用固定延时循环盲点（如每 3 秒重开一次弹层）；所有重试必须**有界**（最多 2~3 次），异常立即暴露并诊断。
 
-### 2. 双中台与字段规则
-- **不校验自定义导出字段**：各用户导出列设置不同，跳过导出列清单与列顺序核对。
-- **业务单元校验**：
-  - `brand: "小仓"` 核对并切换到 `小仓生活`；
-  - `brand: "乐心宜"` 优先匹配 `小仓生活乐心宜` / `乐心宜`（或唯一含「乐心宜」非仓店选项，多候选时停下列出请用户指定）；
-  - 若目标页面顶栏业务单元为静态不可切换状态（例如仓店汇总页），先在 `#/home` 切到并校验用户目标中台，再进入目标页面并核对静态顶栏；
-  - 切换业务单元后若页面自动跳回 `#/home`，须重新导航回目标路由并复核业务单元。
-- **跨中台门店防呆**：门店仅归属对应中台；若找不到目标门店（`STORE_NOT_FOUND`），优先核对该门店是否属于另一个中台（小仓 / 乐心宜）。
-- **动态操作人**：导出前动态读取页面右上角当前登录操作人姓名，用于筛选本人导出的记录。
+### 2. 能输入的控件一律优先输入匹配
+- **门店 / 仓店 / 渠道 / 商品编码 / 活动名称 / 日期输入框**：只要控件里能打字，**优先在输入框直接键入关键词过滤**，等待列表刷新后精确点击匹配项，然后**回读页面实际选中态**；
+- 仅当控件本身是只读下拉（不支持输入），或用户不知道准确名称需要先看全量名单时，才采用点击展开或滚动枚举。
 
-### 3. 标准执行流程（6 步）
-1. **后台隔离窗口**：使用 `采集`（或用户配置）资料打开独立 `taskSpace`，立即最小化窗口并设置桌面视口与后台焦点模拟（`Emulation.setFocusEmulationEnabled`）。
-2. **登录与业务单元校验**：打开目标页面后核对登录态、切换并校验对应中台（小仓 / 乐心宜）业务单元，清掉「知道了」与推广等遮挡弹窗。
-3. **筛选重置与回读**：点击「重置」并确认已选标签归零后，按用户要求选中门店/仓店、渠道与日期范围，并**回读实际选中态**。
-4. **查询确认**：点击「查询」等待表格加载稳定，读取分页总行数（确认非报错且知悉是否空表）。
-5. **防重导导出与验包落盘**：提交导出前将操作人、中台、业务单元与时间戳写入 `_recovery.json`；经「导出记录」等待完成、`chrome://downloads/` 核对安全放行后，调用 `verifyXlsxFile` 校验工作簿结构，保存至 `产出文件/YYYYMMDD-HHmm_<中台>_<任务名>/`（超时或中断时只凭 `_recovery.json` 回查原记录，严禁重新点击导出）。
-6. **写操作自主判断与按需固化**：涉及修改商品、价格、库存或活动状态时，若用户意图与变动参数齐备且页面状态正常，可直接执行提交并回读核验（仅在缺参、多义或页面异常时停下确认）；若本次为未固化新操作且成功完成，完工后按 [workflow-crystallization.md](workflow-crystallization.md) 询问是否固化至 `~/.xc-ego/workflows/`。
+### 3. 尽量用语义节点或 DOM 激活，减少像素坐标依赖
+- 最小化后台窗口下开启 `Emulation.setFocusEmulationEnabled({ enabled: true })` 与桌面视口，但 Chromium 仍可能对 CSS 动画（如 `rc-motion` 日历、下拉滑出层）降频：
+  - 日历等带动画的弹层等待超时保留充裕余量（≥ 15 秒）；
+  - 下拉菜单同时兼容 `hover` 与 `click` 触发；
+  - 弹层关闭按钮、下载图标、选项点击优先定位到**当前可见容器内的唯一 DOM 节点直接触发**，不用写死屏幕比例坐标盲点。
+- 少数受浏览器用户手势限制的提示音弹窗（如海博「知道了」空闲提示），才用 `page.mouse.click` 真实点击关闭。
 
----
+### 4. 导出与下载：操作人 + 时间为主锚点，永不重复导出
+- **任务定位逻辑**：海博后台的导出记录任务名经常与按钮文字不一致（例如按钮叫「导出商品」，记录里叫「门店商品导出」）。因此定位记录时必须以 **「当前右上角操作人姓名 + 提交时间之后 + 排除已交付记录」** 作为主锚点；关键词（`recordHints`）只用于多条候选同时存在时优先筛选，**绝不因关键词不完全一致而把已完成任务过滤掉**。
+- **打开记录弹层后主动查一次**：兼容「导出记录」「导入导出记录」等入口名称（按钮或下拉项）；若弹层打开后表里还是空的，先点一次弹层内的 **「查询」** 加载真实记录，再读取行状态。
+- **防重导底线**：点击导出前先写 `_recovery.json`；超时或中断后严禁再次点击导出，只凭 `_recovery.json` 回查原记录。下载并经 `chrome://downloads/` 与 `verifyXlsxFile` 验包通过后，立即标记 `delivered`；收尾关闭弹层即使遇到重渲染消失也按成功处理，不得误判失败。
 
-## 二、可复用的底层工具
-
-编写或执行海博 `ego-browser nodejs` 脚本时，可直接导入以下通用原语：
-
-- **`scripts/lib/hibo_controls.mjs`**：
-  - `openMinimizedTaskSpace` / `prepareTaskWindow` / `navigateKeepingViewport`：最小化窗口、桌面视口与焦点模拟
-  - `readHiboIdentity` / `dismissObstructions` / `closeExportRecords` / `detectHiboPageError`：读取操作人与业务单元、清理遮挡弹窗、识别 404/无权限页
-  - `ensureBusinessUnit` / `pickOrgCandidate` / `prepareReportPage`：切换并校验小仓/乐心宜业务单元、打开目标页签（自动拦截 404 与无权限页面）
-  - `listAvailableStores` / `selectStoresAndVerify` / `selectChannelAndVerify`：滚动/遍历级联拉取完整门店清单、重置并回读门店与渠道（注意：`selectStoresAndVerify` 默认 `resetForm: true` 会触发整表「重置」，必须在选渠道与日期**之前**调用，或传 `{ resetForm: false }` 仅清门店标签；若页面无「重置」按钮会自动退回逐个叉号清理）
-  - `selectDateRangeAndVerify` / `verifyDateRangeInputs`：快捷日期或日历起止日期选择（含 ≥15 秒动画等待与 `/确\s*定/` 按钮处理）并回读核验
-  - `queryTableAndReadCount`：执行查询并稳定读取分页总行数（同时兼容标准 `<table>` 页与如订单列表等卡片列表页）
-  - `submitExportAndRecover` / `resumeFromRecovery`：写入 `_recovery.json` 防重导提交、轮询导出记录并安全下载
-- **`scripts/lib/xlsx_check.mjs`**：
-  - `verifyXlsxFile`：纯 Node 校验 `.xlsx` 扩展名、非空体积及 ZIP 工作簿必备结构（`[Content_Types].xml`、`xl/workbook.xml`）
-
-最小调用约定示例：
-
-```js
-const report = {
-  route: '/xcosOrder/ordermanage/list', // 目标 hash 路由（示例：订单列表）
-  menuText: '订单数据导出',             // 可选：下拉导出菜单项文本
-  recordButtons: ['导出记录'],          // 可选：记录入口按钮，默认 ['导出记录']
-  recordMenuText: undefined,            // 可选：若记录按钮是下拉菜单，则传菜单项文本
-  recordHints: ['订单'],                // 可选：导出记录行匹配关键词，留空则仅按操作人与时间过滤
-};
-const identity = await prepareReportPage(page, report, { brand });
-await selectStoresAndVerify(page, '门店', stores, { brand }); // 须先于渠道和日期调用
-await selectChannelAndVerify(page, '渠道', channel);
-await selectDateRangeAndVerify(page, { startDate: '2026-11-23', endDate: '2026-11-25' });
-const queryResult = await queryTableAndReadCount(page);
-await verifyDateRangeInputs(page, { startDate: '2026-11-23', endDate: '2026-11-25' });
-await submitExportAndRecover(page, task, {
-  reportKey: 'order-list',
-  report,
-  brand,
-  brandBusinessUnit: identity.brandBusinessUnit || '',
-  businessUnit: identity.businessUnit,
-  operatorNames: identity.operatorNames,
-  recoveryPath,
-  destinationPath,
-});
-```
+### 5. 上下文与业务单元守恒
+- 不校验自定义导出列清单与顺序；
+- 进入目标页面后核对顶部业务单元是否与用户目标一致（若目标页顶栏为静态不可点击状态，先在 `#/home` 切好目标中台再进入目标页，切换时等待数字 ID 过渡态解析完成；若切完跳回首页则重开目标路由）；
+- 非全店表切换或重置筛选后回读已选标签（排除 `+N` 折叠提示）；找不到门店（`STORE_NOT_FOUND`）时提醒核对是否属于另一个中台。
 
 ---
 
-## 三、海博常见弹窗与踩坑避雷清单
+## 二、标准执行骨架（6 步）
 
-1. **中途突发空闲弹窗与推广弹窗**（「系统检测到您较长时间未操作页面」/「知道了」、「报名开通」）：页面加载后会二次弹出；打开菜单、切组织、点查询/导出及轮询等待前均先清理弹窗，遇到菜单展开失败时清弹窗后重试一次。其中「知道了」提示音弹窗受浏览器用户手势限制，必须通过真实鼠标点击（`page.mouse.click`）才能关闭，合成 DOM `.click()` 无效。
-2. **最小化窗口动画冻结与坐标偏移**：打开 `taskSpace` 最小化窗口及每次导航后，须开启并保持 `Emulation.setFocusEmulationEnabled({ enabled: true })`，避免下拉菜单停在动画首帧；弹窗按钮、关闭图标与下载图标优先在 DOM 中唯一绑定后直接 `.click()`，减少对原生鼠标坐标的依赖。
-3. **导出前「自定义导出字段」提示弹窗**：部分页面点击导出商品时会弹出该提示框且没有「确定」按钮，必须点击「不设置，继续导出」才会真正创建后台导出任务。
-4. **等待导出时「导出记录」弹层意外关闭**：轮询期间若记录弹层消失，应重新打开「导出记录」继续按原操作人与时间戳查任务，严禁重新点击导出。
-5. **静态业务单元顶栏页面**：若目标页顶栏显示静态业务单元且不可直接点击切换（`staticHeaderOrg`），须先在 `#/home` 切到目标中台并校验，再进入目标页核对静态顶栏；超时 `resume` 时同样须先按记录的 `brandBusinessUnit` 切回原中台。
-6. **切换业务单元跳回首页与数字 ID 过渡态**：`#/home` 初载时会短暂显示组织数字 ID，须等待其解析为非纯数字后再核对；切完业务单元若自动跳回 `#/home`，须重开目标路由并复核。
-7. **重置残留门店标签与 `+N` 折叠计数**：点击「重置」后若仍残留已选门店标签，需逐个点击标签叉号清除；统计已选门店数时必须排除 `+N` 折叠提示节点。
-8. **日期选择器「确 定」含空格与查询后重置**：确认按钮文本可能含空格，须按 `/确\s*定/` 匹配，直接按 `Esc` 会回滚回默认近 7 天；选完日期后须确认 `.hibo-picker-dropdown` 已关闭以免遮挡按钮，点击「查询」后还须二次回读日期输入框防止被页面重置。
-9. **最小化窗口下的日期选择器展开等待超时（≥ 15 秒）**：即使已开启 `Emulation.setFocusEmulationEnabled({ enabled: true })`，最小化 Chromium 仍可能将 `requestAnimationFrame` 降频至约 1Hz，导致毛利分析等页面的 `rc-motion` 多帧动画日历弹层挂载耗时接近 5 秒；等待日期弹层展开与日期格可见的超时阈值必须设为 **≥ 15 秒**（不可使用 5 秒短超时）。
-10. **导出交付后关闭「导出记录」弹层容错**：下载文件并完成 `chrome://downloads/` 与 `.xlsx` 结构验包后，应先将 `_recovery.json` 标记为已交付（`delivered`），再通过 DOM 直接 `.click()` 关闭「导出记录」弹层；若弹层在下载完成后已自动关闭或重渲染消失，按「已关闭」处理，**严禁将收尾关弹窗异常误判为任务失败而触发重复导出**。
+1. **后台隔离窗口**：按默认资料或用户配置打开最小化独立 `taskSpace`，设桌面视口与焦点模拟。
+2. **登录与业务单元校验**：核对登录态、切换并校验目标业务单元，清掉挡路弹窗（识别 404 / 无权限页）。
+3. **输入优先筛选与回读**：如需重置先清旧条件，能输入的地方优先输入匹配（门店、渠道、日期等），**回读实际选中态**。
+4. **查询稳定等待**：点击「查询」等待加载结束，读取分页总行数或可见行状态确认非报错。
+5. **防重导导出与验包落盘**：写 `_recovery.json` → 触发导出（兼容「不设置，继续导出」提示框）→ 打开记录弹层并按需点「查询」→ 按操作人 + 时间锚点锁定已完成行直接下载 → `chrome://downloads/` 与 `verifyXlsxFile` 验包 → 落盘到用户选定的目录。
+6. **写操作与按需固化**：改价/库存/活动等写操作在参数齐备且页面正常时先快照后提交并回读核验；未固化新操作跑通后，按 [workflow-crystallization.md](workflow-crystallization.md) 输出 Markdown 询问卡片。
+
+---
+
+## 三、可复用的底层工具（`scripts/lib/hibo_controls.mjs` & `xlsx_check.mjs`）
+
+这些原语已按上述通用原则加固，可在自定义脚本中直接导入；若遇到特殊新页面结构，优先用 `page.snapshot()` 配合原语灵活处理：
+
+- `openMinimizedTaskSpace` / `prepareTaskWindow` / `navigateKeepingViewport`：最小化后台窗口、桌面视口与焦点模拟（不传 `profileName` 时自动用默认资料）
+- `readHiboIdentity` / `dismissObstructions` / `closeExportRecords` / `detectHiboPageError`：身份与业务单元读取、DOM 安全清弹窗、404/无权限识别
+- `ensureBusinessUnit` / `pickOrgCandidate` / `prepareReportPage`：业务单元切换与校验（支持小仓、乐心宜及任意单元名透传）
+- `listAvailableStores` / `selectStoresAndVerify` / `selectChannelAndVerify`：输入优先的门店/渠道选择与回读（也支持多选渠道与未知全称时拉取门店列表）
+- `selectDateRangeAndVerify` / `verifyDateRangeInputs`：优先直接输入起止日期并回车确认，不支持输入时自动回退到日历面板选择（≥ 15 秒动画等待与 `/确\s*定/` 处理）
+- `queryTableAndReadCount`：等待加载稳定并读取分页总行数或可见表格行状态
+- `submitExportAndRecover` / `resumeFromRecovery`：写入 `_recovery.json`、兼容「导出记录/导入导出记录」、按操作人 + 时间锚点定位记录行、DOM 直接点击下载图标与验包
+- `verifyXlsxFile`：校验 `.xlsx` 扩展名、体积与 ZIP 工作簿必需条目
